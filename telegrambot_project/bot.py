@@ -129,6 +129,31 @@ async def movie_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return MOVIE_INPUT
 
+async def sentiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /sentiment"""
+    if classifier is None:
+        await update.message.reply_text(
+            "❌ Модель анализа тональности не загружена. Попробуйте позже.",
+            reply_markup=get_main_reply_keyboard()
+        )
+        return MENU
+    
+    if context.args:
+        # Если есть аргументы, сразу анализируем
+        text = " ".join(context.args)
+        return await analyze_sentiment(update, context, text)
+    else:
+        # Если нет аргументов, запрашиваем текст
+        await update.message.reply_text(
+            "😊 Введите текст для анализа тональности:",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("🔙 Отмена")]], 
+                resize_keyboard=True, 
+                one_time_keyboard=True
+            )
+        )
+        return SENTIMENT_INPUT
+
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /ask"""
     if not GEN_API_KEY:
@@ -153,33 +178,6 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
         return ASK_INPUT
-
-
-async def sentiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /sentiment"""
-    if classifier is None:
-        await update.message.reply_text(
-            "❌ Модель анализа тональности не загружена. Попробуйте позже.",
-            reply_markup=get_main_reply_keyboard()
-        )
-        return MENU
-
-    if context.args:
-        # Если есть аргументы, сразу анализируем
-        text = " ".join(context.args)
-        return await analyze_sentiment(update, context, text)
-    else:
-        # Если нет аргументов, запрашиваем текст
-        await update.message.reply_text(
-            "😊 Введите текст для анализа тональности:",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("🔙 Отмена")]],
-                resize_keyboard=True,
-                one_time_keyboard=True
-            )
-        )
-        return SENTIMENT_INPUT
-
 
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None):
     """Поиск фильмов"""
@@ -258,27 +256,34 @@ async def analyze_sentiment(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     """Анализ тональности текста"""
     if text is None:
         text = " ".join(context.args) if context.args else update.message.text
+    
     if text.lower() == '🔙 отмена':
         await update.message.reply_text(
             "Анализ отменен. Возвращаюсь в меню.",
             reply_markup=get_main_reply_keyboard()
         )
         return MENU
+    
     await update.message.chat.send_action(action="typing")
+    
     try:
         labels = ["positive", "negative", "neutral"]
         prompt = "Analyze the sentiment of this text:"
+        
         logger.info(f"Анализ тональности для текста: {text[:50]}...")
+        
         results = classifier(text, labels, prompt=prompt, threshold=0.0)[0]
         best_result = max(results, key=lambda x: x['score'])
         label = best_result['label']
         score = best_result['score']
+
         if label == "positive":
             emotion = "😊 положительная"
         elif label == "negative":
             emotion = "😞 отрицательная"
         else:
             emotion = "😐 нейтральная"
+
         await update.message.reply_text(
             f"📊 *Результат анализа:*\n\n"
             f"Текст: _{text[:100]}{'...' if len(text) > 100 else ''}_\n"
@@ -287,40 +292,51 @@ async def analyze_sentiment(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             parse_mode='Markdown',
             reply_markup=get_main_reply_keyboard()
         )
+
     except Exception as e:
         logger.error(f"Ошибка анализа с GLiClass: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ Не удалось выполнить анализ тональности.",
             reply_markup=get_main_reply_keyboard()
         )
+    
     return MENU
+
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE, question=None):
     """Задать вопрос к Gen API"""
     if question is None:
         question = " ".join(context.args) if context.args else update.message.text
+    
     if question.lower() == '🔙 отмена':
         await update.message.reply_text(
             "Вопрос отменен. Возвращаюсь в меню.",
             reply_markup=get_main_reply_keyboard()
         )
         return MENU
+    
     await update.message.chat.send_action(action="typing")
+    
     payload = {
         "is_sync": True,
         "messages": [{"role": "user", "content": question}]
     }
+
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {GEN_API_KEY}"
     }
+
     try:
         logger.info("Отправка запроса к Gen API")
         response = requests.post(GEN_API_URL, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
+
         data = response.json()
         logger.info("Ответ от Gen API получен")
+        
         answer = None
+
         if isinstance(data, dict):
             if data.get("response") and isinstance(data["response"], list) and len(data["response"]) > 0:
                 first_response = data["response"][0]
@@ -332,6 +348,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE, quest
                                 answer = choice["message"]["content"]
                             elif choice.get("text"):
                                 answer = choice["text"]
+
             if answer is None and data.get("choices") and isinstance(data["choices"], list) and len(data["choices"]) > 0:
                 choice = data["choices"][0]
                 if isinstance(choice, dict):
@@ -339,18 +356,23 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE, quest
                         answer = choice["message"]["content"]
                     elif choice.get("text"):
                         answer = choice["text"]
+
             if answer is None and data.get("content"):
                 answer = data["content"]
+
         if answer is None:
             answer = "❌ Не удалось получить ответ от API."
+
         MAX_LEN = 4000
         if len(answer) > MAX_LEN:
             answer = answer[:MAX_LEN] + "\n\n... (сообщение обрезано)"
+
         await update.message.reply_text(
             f"🤖 *Вопрос:* {question}\n\n*Ответ:*\n{answer}",
             parse_mode='Markdown',
             reply_markup=get_main_reply_keyboard()
         )
+
     except requests.exceptions.HTTPError as e:
         status_code = e.response.status_code
         error_body = e.response.text
@@ -363,6 +385,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE, quest
             error_message = "❌ Ошибка аутентификации. Проверьте API ключ."
         elif status_code == 429:
             error_message = "❌ Превышен лимит запросов. Попробуйте позже."
+            
         await update.message.reply_text(
             error_message,
             reply_markup=get_main_reply_keyboard()
@@ -375,10 +398,12 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE, quest
         )
     
     return MENU
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на инлайн-кнопки"""
     query = update.callback_query
     await query.answer()
+    
     if query.data == "movie":
         await query.edit_message_text(
             "🎬 Введите название фильма для поиска:",
@@ -387,6 +412,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
         return MOVIE_INPUT
+    
     elif query.data == "sentiment":
         if classifier is None:
             await query.edit_message_text(
@@ -396,6 +422,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]])
             )
             return MENU
+        
         await query.edit_message_text(
             "😊 Введите текст для анализа тональности:",
             reply_markup=InlineKeyboardMarkup([[
@@ -403,6 +430,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
         return SENTIMENT_INPUT
+    
     elif query.data == "ask":
         if not GEN_API_KEY:
             await query.edit_message_text(
@@ -412,6 +440,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]])
             )
             return MENU
+        
         await query.edit_message_text(
             "🤖 Введите ваш вопрос:",
             reply_markup=InlineKeyboardMarkup([[
@@ -419,9 +448,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
         return ASK_INPUT
+    
     elif query.data == "help":
-        help_text = ("📚 *Доступные команды:*\n\n""🎬 */movie* - поиск фильмов\n""😊 */sentiment* - анализ тональности\n"
-            "🤖 */ask* - задать вопрос AI\n""❓ */help* - справка\n""🚪 */cancel* - отмена"
+        help_text = (
+            "📚 *Доступные команды:*\n\n"
+            "🎬 */movie* - поиск фильмов\n"
+            "😊 */sentiment* - анализ тональности\n"
+            "🤖 */ask* - задать вопрос AI\n"
+            "❓ */help* - справка\n"
+            "🚪 */cancel* - отмена"
         )
         await query.edit_message_text(
             help_text,
@@ -438,6 +473,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_inline_keyboard()
         )
         return MENU
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /cancel"""
     await update.message.reply_text(
@@ -445,6 +481,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_reply_keyboard()
     )
     return MENU
+
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений вне диалога"""
     await update.message.reply_text(
@@ -452,11 +489,14 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_reply_keyboard()
     )
     return MENU
+
 def main():
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не найден! Бот не может запуститься.")
         return
+
     application = Application.builder().token(BOT_TOKEN).build()
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -505,8 +545,12 @@ def main():
     application.add_handler(CommandHandler("sentiment", sentiment_command))
     application.add_handler(CommandHandler("ask", ask_command))
     application.add_handler(CommandHandler("cancel", cancel))
+
     application.add_handler(CallbackQueryHandler(button_handler))
+
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+
     application.run_polling()
+
 if __name__ == "__main__":
     main()
